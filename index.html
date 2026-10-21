@@ -1,0 +1,2457 @@
+﻿<!DOCTYPE html>
+<html lang="id" class="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0f172a">
+  <title>LaundryGO - SBH President University</title>
+
+  <!-- Google Fonts: Plus Jakarta Sans / JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+
+  <!-- Tailwind CSS via CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#f0f9ff',
+              100: '#e0f2fe',
+              200: '#bae6fd',
+              300: '#7dd3fc',
+              400: '#38bdf8',
+              500: '#0ea5e9',
+              600: '#0284c7',
+              700: '#0369a1',
+              800: '#075985',
+              900: '#0c4a6e',
+            }
+          },
+          fontFamily: {
+            sans: ['"Plus Jakarta Sans"', '-apple-system', 'BlinkMacSystemFont', '"SF Pro Display"', '"Segoe UI"', 'Roboto', 'sans-serif'],
+            mono: ['"JetBrains Mono"', '"SF Mono"', 'Menlo', 'monospace']
+          },
+          animation: {
+            'laser-sweep': 'laserSweep 2.2s ease-in-out infinite',
+          },
+          keyframes: {
+            laserSweep: {
+              '0%, 100%': { top: '4%', opacity: '0.85' },
+              '50%': { top: '92%', opacity: '0.85' },
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- React 18 & ReactDOM -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+  <!-- Babel Standalone for In-Browser JSX -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    /* Custom Scrollbars */
+    ::-webkit-scrollbar {
+      width: 5px;
+      height: 5px;
+    }
+    ::-webkit-scrollbar-track {
+      background: rgba(241, 245, 249, 0.7);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(14, 165, 233, 0.3);
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(14, 165, 233, 0.6);
+    }
+
+    /* Laser Scanner Beam */
+    .animate-laser-sweep {
+      animation: laserSweep 2s ease-in-out infinite;
+    }
+    @keyframes laserSweep {
+      0%, 100% {
+        top: 4%;
+        opacity: 0.85;
+      }
+      50% {
+        top: 92%;
+        opacity: 0.85;
+      }
+    }
+  </style>
+</head>
+<body class="bg-slate-100 text-slate-800 min-h-screen selection:bg-sky-500 selection:text-white">
+  <div id="root"></div>
+
+  <!-- Hardware Prototype Bridge -->
+  <script>
+/**
+ * LaundryGO - Smart Locker Hardware & API Bridge
+ * 
+ * Modul ini berfungsi sebagai pondasi integrasi antara Mobile Web LaundryGO
+ * dengan Prototype Hardware Smart Locker (ESP32, Arduino, Raspberry Pi, dsb).
+ * 
+ * Protokol yang didukung:
+ * 1. WebSocket (Real-time bidirectional control: ws://<locker_ip>:81/ws)
+ * 2. HTTP REST API (Locker unlock, status query, tare/weighing)
+ * 3. MQTT Broker (Pub/Sub untuk monitoring jarak jauh)
+ * 4. Web Serial API (Direct USB connection to microcontroller)
+ */
+
+class LockerHardwareBridge {
+  constructor() {
+    this.isConnected = false;
+    this.endpoint = null;
+    this.ws = null;
+    this.listeners = new Map();
+    this.mockMode = true; // Default to interactive simulation if hardware not connected
+    
+    // Status awal locker prototype (SBH President University)
+    this.lockers = {
+      A01: { id: 'A01', status: 'READY FOR PICKUP', doorOpen: false, pinCode: '8910', sensor: 'UV_ACTIVE', weight: 3.5 },
+      A02: { id: 'A02', status: 'AVAILABLE', doorOpen: false, pinCode: null, sensor: 'EMPTY', weight: 0 },
+      A03: { id: 'A03', status: 'OCCUPIED', doorOpen: false, pinCode: '2411', sensor: 'OCCUPIED', weight: 4.2 },
+      B01: { id: 'B01', status: 'AVAILABLE', doorOpen: false, pinCode: null, sensor: 'EMPTY', weight: 0 },
+      B02: { id: 'B02', status: 'AVAILABLE', doorOpen: false, pinCode: null, sensor: 'EMPTY', weight: 0 },
+      B03: { id: 'B03', status: 'MAINTENANCE', doorOpen: false, pinCode: null, sensor: 'UV_SANITIZING', weight: 0 },
+    };
+  }
+
+  /**
+   * Subscribe ke event locker (doorOpen, doorClose, statusChange, weightReading, qrScanned)
+   */
+  on(event, callback) {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, []);
+    }
+    this.listeners.get(event).push(callback);
+    return () => this.off(event, callback);
+  }
+
+  off(event, callback) {
+    if (!this.listeners.has(event)) return;
+    const filtered = this.listeners.get(event).filter(cb => cb !== callback);
+    this.listeners.set(event, filtered);
+  }
+
+  emit(event, data) {
+    if (this.listeners.has(event)) {
+      this.listeners.get(event).forEach(cb => {
+        try {
+          cb(data);
+        } catch (e) {
+          console.error(`[LockerBridge] Error in listener for event ${event}:`, e);
+        }
+      });
+    }
+  }
+
+  /**
+   * Hubungkan ke prototype hardware melalui WebSocket (ESP32 / NodeMCU)
+   * Contoh: bridge.connectWebSocket('ws://192.168.1.150:81/ws')
+   */
+  connectWebSocket(url) {
+    this.endpoint = url;
+    console.log(`[LockerBridge] Connecting to Hardware Locker at ${url}...`);
+    try {
+      this.ws = new WebSocket(url);
+      this.ws.onopen = () => {
+        this.isConnected = true;
+        this.mockMode = false;
+        console.log('[LockerBridge] Connected to Smart Locker Hardware Prototype!');
+        this.emit('connectionChange', { connected: true, endpoint: url });
+      };
+
+      this.ws.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          this.handleHardwareMessage(payload);
+        } catch (err) {
+          console.warn('[LockerBridge] Raw message from hardware:', event.data);
+        }
+      };
+
+      this.ws.onclose = () => {
+        this.isConnected = false;
+        this.mockMode = true;
+        console.log('[LockerBridge] Hardware connection closed. Reverting to interactive simulation.');
+        this.emit('connectionChange', { connected: false });
+      };
+
+      this.ws.onerror = (err) => {
+        console.error('[LockerBridge] WebSocket Error:', err);
+        this.emit('error', err);
+      };
+    } catch (e) {
+      console.warn('[LockerBridge] Unable to create WebSocket. Running in standalone UI mode.', e);
+    }
+  }
+
+  /**
+   * Parsing data masuk dari mikrokontroler ESP32 / Arduino
+   */
+  handleHardwareMessage(payload) {
+    // Format JSON dari hardware contoh:
+    // { "type": "DOOR_TRIGGERED", "lockerId": "A01", "state": "OPEN" }
+    // { "type": "LOAD_CELL_WEIGHT", "lockerId": "A01", "weightKg": 3.48 }
+    // { "type": "OPTICAL_SCANNER_READ", "qrRaw": "LGO-SEC-3942-F8B1" }
+    console.log('[LockerBridge] Hardware event received:', payload);
+    switch (payload.type) {
+      case 'DOOR_TRIGGERED':
+        if (this.lockers[payload.lockerId]) {
+          this.lockers[payload.lockerId].doorOpen = payload.state === 'OPEN';
+        }
+        this.emit('doorChange', payload);
+        break;
+      case 'LOAD_CELL_WEIGHT':
+        this.emit('weightReading', payload);
+        break;
+      case 'OPTICAL_SCANNER_READ':
+        this.emit('qrScanned', payload);
+        break;
+      default:
+        this.emit('hardwareMessage', payload);
+    }
+  }
+
+  /**
+   * Kirim perintah BUKA PINTU SOLENOID ke locker
+   * Mendukung koneksi hardware nyata atau simulasi instan
+   */
+  async unlockLocker(lockerId, authPayload = {}) {
+    console.log(`[LockerBridge] Requesting UNLOCK for Locker ${lockerId}...`, authPayload);
+
+    if (this.isConnected && this.ws && this.ws.readyState === WebSocket.OPEN) {
+      const command = {
+        action: 'UNLOCK',
+        lockerId: lockerId,
+        timestamp: Date.now(),
+        auth: authPayload
+      };
+      this.ws.send(JSON.stringify(command));
+    }
+
+    // Update internal state
+    if (this.lockers[lockerId]) {
+      this.lockers[lockerId].doorOpen = true;
+    }
+
+    this.emit('doorChange', { lockerId, state: 'OPEN', by: authPayload.role || 'user' });
+
+    return {
+      success: true,
+      lockerId,
+      unlockedAt: new Date().toISOString(),
+      message: `Locker ${lockerId} solenoid triggered successfully.`
+    };
+  }
+
+  /**
+   * Perintah KUNCI PINTU SOLENOID
+   */
+  async lockLocker(lockerId) {
+    console.log(`[LockerBridge] Locking Locker ${lockerId}...`);
+
+    if (this.isConnected && this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ action: 'LOCK', lockerId, timestamp: Date.now() }));
+    }
+
+    if (this.lockers[lockerId]) {
+      this.lockers[lockerId].doorOpen = false;
+    }
+
+    this.emit('doorChange', { lockerId, state: 'CLOSED' });
+    return { success: true, lockerId };
+  }
+
+  /**
+   * Verifikasi Optical Token QR dari Scanner Hardware
+   */
+  verifyQRToken(scannedToken, targetLockerId = 'A01') {
+    if (!scannedToken) return { valid: false, reason: 'Token kosong' };
+    
+    // Verifikasi format token LaundryGO (LGO-SEC-xxxx atau OTP)
+    const isValidFormat = scannedToken.startsWith('LGO-') || scannedToken.length >= 8;
+    
+    return {
+      valid: isValidFormat,
+      lockerId: targetLockerId,
+      verifiedAt: new Date().toISOString(),
+      token: scannedToken
+    };
+  }
+}
+
+// Inisialisasi singleton bridge global
+const lockerBridge = new LockerHardwareBridge();
+if (typeof window !== 'undefined') {
+  window.LaundryGOHardwareBridge = lockerBridge;
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { LockerHardwareBridge, lockerBridge };
+}
+
+  </script>
+
+  <!-- Primary Application Script -->
+  <script type="text/babel">
+// =========================================================================
+// LaundryGO - Smart Laundry Locker Platform (SBH President University)
+// Clean Mobile Web Architecture (Customer Service Choice + Multi-Locker Operator)
+// =========================================================================
+
+const { useState, useEffect, useRef, useMemo, useCallback } = React;
+
+// =========================================================================
+// 1. SOUND SYNTHESIZER (WEB AUDIO API - ZERO DEPENDENCY)
+// =========================================================================
+class SoundFX {
+  constructor() {
+    this.ctx = null;
+    this.muted = false;
+  }
+
+  init() {
+    if (!this.ctx) {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (AudioContext) {
+        this.ctx = new AudioContext();
+      }
+    }
+    if (this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume();
+    }
+  }
+
+  playSolenoidClick() {
+    if (this.muted) return;
+    this.init();
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(340, now);
+    osc.frequency.exponentialRampToValueAtTime(45, now + 0.08);
+    gain.gain.setValueAtTime(0.4, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.08);
+  }
+
+  playDoorOpen() {
+    if (this.muted) return;
+    this.init();
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(160, now);
+    osc.frequency.linearRampToValueAtTime(290, now + 0.35);
+    gain.gain.setValueAtTime(0.14, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.4);
+  }
+
+  playDoorClose() {
+    if (this.muted) return;
+    this.init();
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(240, now);
+    osc.frequency.linearRampToValueAtTime(110, now + 0.3);
+    gain.gain.setValueAtTime(0.18, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.32);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.32);
+  }
+
+  playScanBeep() {
+    if (this.muted) return;
+    this.init();
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(1850, now);
+    gain.gain.setValueAtTime(0.25, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.12);
+  }
+
+  playSuccessChime() {
+    if (this.muted) return;
+    this.init();
+    if (!this.ctx) return;
+    const notes = [523.25, 659.25, 783.99, 1046.50];
+    notes.forEach((freq, idx) => {
+      const now = this.ctx.currentTime + idx * 0.08;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now);
+      gain.gain.setValueAtTime(0.22, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.28);
+    });
+  }
+
+  playPaymentChime() {
+    if (this.muted) return;
+    this.init();
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const freqs = [659.25, 987.77, 1318.51];
+    freqs.forEach((freq, idx) => {
+      const t = now + idx * 0.06;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, t);
+      gain.gain.setValueAtTime(0.25, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.3);
+    });
+  }
+
+  playBuzzer() {
+    if (this.muted) return;
+    this.init();
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    [0, 0.14].forEach((offset) => {
+      const t = now + offset;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(160, t);
+      gain.gain.setValueAtTime(0.3, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.1);
+    });
+  }
+
+  playTokenRotate() {
+    if (this.muted) return;
+    this.init();
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(920, now);
+    osc.frequency.exponentialRampToValueAtTime(1450, now + 0.09);
+    gain.gain.setValueAtTime(0.15, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.09);
+  }
+}
+
+const sound = new SoundFX();
+
+// =========================================================================
+// 2. SVG ICON COMPONENT
+// =========================================================================
+const Icon = ({ name, className = "w-4 h-4", ...props }) => {
+  switch (name) {
+    case 'box':
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+          <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>
+          <path d="m3.3 7 8.7 5 8.7-5"/>
+          <path d="M12 22V12"/>
+        </svg>
+      );
+    case 'clock':
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+          <circle cx="12" cy="12" r="10"/>
+          <polyline points="12 6 12 12 16 14"/>
+        </svg>
+      );
+    case 'qr-code':
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+          <rect width="5" height="5" x="3" y="3" rx="1"/>
+          <rect width="5" height="5" x="16" y="3" rx="1"/>
+          <rect width="5" height="5" x="3" y="16" rx="1"/>
+          <path d="M21 16h-3a2 2 0 0 0-2 2v3"/>
+          <path d="M21 21v.01"/>
+          <path d="M12 7v3a2 2 0 0 1-2 2H7"/>
+          <path d="M3 12h.01"/>
+          <path d="M12 3h.01"/>
+          <path d="M12 16v.01"/>
+          <path d="M16 12h1"/>
+          <path d="M21 12v.01"/>
+          <path d="M12 21v-1"/>
+        </svg>
+      );
+    case 'wallet':
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+          <path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/>
+          <path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/>
+        </svg>
+      );
+    case 'user':
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+          <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/>
+          <circle cx="12" cy="7" r="4"/>
+        </svg>
+      );
+    case 'users':
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+          <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+          <circle cx="9" cy="7" r="4"/>
+          <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+          <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+        </svg>
+      );
+    case 'sparkles':
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+          <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/>
+        </svg>
+      );
+    case 'check':
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+          <polyline points="20 6 9 17 4 12"/>
+        </svg>
+      );
+    case 'refresh':
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+          <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
+          <path d="M21 3v5h-5"/>
+          <path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+          <path d="M3 21v-5h5"/>
+        </svg>
+      );
+    case 'scan':
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+          <path d="M3 7V5a2 2 0 0 1 2-2h2"/>
+          <path d="M17 3h2a2 2 0 0 1 2 2v2"/>
+          <path d="M21 17v2a2 2 0 0 1-2 2h-2"/>
+          <path d="M7 21H5a2 2 0 0 1-2-2v-2"/>
+          <line x1="7" y1="12" x2="17" y2="12"/>
+        </svg>
+      );
+    case 'scale':
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+          <path d="m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/>
+          <path d="m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/>
+          <path d="M7 21h10"/>
+          <path d="M12 3v18"/>
+          <path d="M3 7h18"/>
+        </svg>
+      );
+    case 'tag':
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+          <path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"/>
+          <path d="M7 7h.01"/>
+        </svg>
+      );
+    case 'key':
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+          <circle cx="7.5" cy="15.5" r="5.5"/>
+          <path d="m21 2-9.6 9.6"/>
+          <path d="m15.5 7.5 3 3L22 7l-3-3"/>
+        </svg>
+      );
+    case 'lock':
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+          <rect width="18" height="11" x="3" y="11" rx="2" ry="2"/>
+          <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+        </svg>
+      );
+    case 'unlock':
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+          <rect width="18" height="11" x="3" y="11" rx="2" ry="2"/>
+          <path d="M7 11V7a5 5 0 0 1 9.9-1"/>
+        </svg>
+      );
+    case 'chevron-right':
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+          <polyline points="9 18 15 12 9 6"/>
+        </svg>
+      );
+    case 'printer':
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+          <polyline points="6 9 6 2 18 2 18 9"/>
+          <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
+          <rect width="12" height="8" x="6" y="14"/>
+        </svg>
+      );
+    case 'volume':
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+          <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+          <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+        </svg>
+      );
+    case 'volume-x':
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+          <line x1="22" y1="9" x2="16" y2="15"/>
+          <line x1="16" y1="9" x2="22" y2="15"/>
+        </svg>
+      );
+    case 'send':
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+          <line x1="22" y1="2" x2="11" y2="13"/>
+          <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+        </svg>
+      );
+    case 'layers':
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+          <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+          <polyline points="2 17 12 22 22 17"/>
+          <polyline points="2 12 12 17 22 12"/>
+        </svg>
+      );
+    default:
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+          <circle cx="12" cy="12" r="10"/>
+        </svg>
+      );
+  }
+};
+
+// =========================================================================
+// 3. CONSTANTS & SERVICE TIERS (DIPILIH OLEH CUSTOMER)
+// =========================================================================
+const ADMIN_FEE = 1000; // Rp 1.000 Fixed Admin Fee
+
+const SERVICE_SPEED_TIERS = {
+  regular: {
+    id: 'regular',
+    name: 'Regular Clean',
+    durationLabel: '3 Hari',
+    days: 3,
+    ratePerKg: 7000,
+    badgeColor: 'text-emerald-700 bg-emerald-50 border-emerald-200',
+    desc: 'Cuci bersih higienis, pengeringan, dan lipat rapi.'
+  },
+  fast: {
+    id: 'fast',
+    name: 'Fast Service',
+    durationLabel: '2 Hari',
+    days: 2,
+    ratePerKg: 10000,
+    badgeColor: 'text-sky-700 bg-sky-50 border-sky-200',
+    desc: 'Layanan harian favorit untuk pakaian kuliah dan santai.'
+  },
+  sameday: {
+    id: 'sameday',
+    name: 'Same Day Express',
+    durationLabel: '1 Hari',
+    days: 1,
+    ratePerKg: 15000,
+    badgeColor: 'text-amber-700 bg-amber-50 border-amber-200',
+    desc: 'Diprioritaskan selesai maksimal dalam 24 jam.'
+  }
+};
+
+const LOCKER_STATUS_CONFIG = {
+  'AVAILABLE': {
+    bg: 'bg-emerald-50',
+    text: 'text-emerald-700',
+    border: 'border-emerald-200',
+    dot: 'bg-emerald-500',
+    label: 'TERSEDIA'
+  },
+  'OCCUPIED': {
+    bg: 'bg-rose-50',
+    text: 'text-rose-700',
+    border: 'border-rose-200',
+    dot: 'bg-rose-500',
+    label: 'TERISI'
+  },
+  'PROCESSING': {
+    bg: 'bg-amber-50',
+    text: 'text-amber-700',
+    border: 'border-amber-200',
+    dot: 'bg-amber-500',
+    label: 'DIPROSES'
+  },
+  'READY FOR PICKUP': {
+    bg: 'bg-sky-50',
+    text: 'text-sky-700',
+    border: 'border-sky-300',
+    dot: 'bg-sky-500',
+    label: 'SIAP DIAMBIL'
+  },
+  'MAINTENANCE': {
+    bg: 'bg-slate-100',
+    text: 'text-slate-600',
+    border: 'border-slate-300',
+    dot: 'bg-slate-400',
+    label: 'PERAWATAN'
+  }
+};
+
+// =========================================================================
+// 4. MAIN APPLICATION COMPONENT
+// =========================================================================
+function App() {
+  // POV Switcher: 'customer' | 'operator' (Mendukung URL query ?mode=operator)
+  const [appMode, setAppMode] = useState(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('mode') === 'operator' ? 'operator' : 'customer';
+    } catch (e) {
+      return 'customer';
+    }
+  });
+
+  // Customer Bottom Navigation: 'lockers' | 'tracker' | 'qr' | 'wallet' | 'profile'
+  const [activeTab, setActiveTab] = useState(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('tab') || 'lockers';
+    } catch (e) {
+      return 'lockers';
+    }
+  });
+
+  // Operator Sub-View: 'weighing' | 'intake' | 'return' | 'lockers_overview'
+  const [operatorTab, setOperatorTab] = useState(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('opTab') || 'weighing';
+    } catch (e) {
+      return 'weighing';
+    }
+  });
+
+  // Sound FX Mute Toggle
+  const [isMuted, setIsMuted] = useState(false);
+
+  // Customer Profiles
+  const [accounts, setAccounts] = useState([
+    {
+      id: 'acc-1',
+      name: 'Vicky Pratama',
+      email: 'vicky.pratama@president.ac.id',
+      phone: '+62 812-9876-5432',
+      tier: 'Gold Member',
+      avatar: 'VP',
+      location: 'SBH President University',
+      primaryKiosk: 'Locker SBH',
+      points: 1450,
+      active: true
+    },
+    {
+      id: 'acc-2',
+      name: 'Amanda Sari',
+      email: 'amanda.sari@outlook.com',
+      phone: '+62 856-1122-3344',
+      tier: 'Silver Member',
+      avatar: 'AS',
+      location: 'SBH President University (Building B)',
+      primaryKiosk: 'Locker SBH',
+      points: 480,
+      active: false
+    },
+    {
+      id: 'acc-3',
+      name: 'Budi Santoso',
+      email: 'budi.santoso@president.ac.id',
+      phone: '+62 878-3344-5566',
+      tier: 'Platinum Member',
+      avatar: 'BS',
+      location: 'SBH President University (Building C)',
+      primaryKiosk: 'Locker SBH',
+      points: 2100,
+      active: false
+    }
+  ]);
+
+  const activeAccount = useMemo(() => accounts.find(a => a.active) || accounts[0], [accounts]);
+
+  // Wallet Balance (LaundryGO Pay)
+  const [walletBalance, setWalletBalance] = useState(175000);
+
+  // =======================================================================
+  // ALL LOCKERS DATA (SBH President University)
+  // Menampilkan status seluruh locker untuk diproses oleh operator
+  // =======================================================================
+  const [lockers, setLockers] = useState({
+    A01: { id: 'A01', status: 'READY FOR PICKUP', capacity: '7 kg', lastUpdated: '10 mnt lalu', orderId: '#LDR-10245', customer: 'Vicky Pratama' },
+    A02: { id: 'A02', status: 'AVAILABLE', capacity: '7 kg', lastUpdated: 'Baru saja', orderId: null, customer: null },
+    A03: { id: 'A03', status: 'OCCUPIED', capacity: '12 kg', lastUpdated: '25 mnt lalu', orderId: '#LDR-10244', customer: 'Amanda Sari' },
+    B01: { id: 'B01', status: 'AVAILABLE', capacity: '7 kg', lastUpdated: '5 mnt lalu', orderId: null, customer: null },
+    B02: { id: 'B02', status: 'OCCUPIED', capacity: '7 kg', lastUpdated: '15 mnt lalu', orderId: '#LDR-10248', customer: 'Budi Santoso' },
+    B03: { id: 'B03', status: 'MAINTENANCE', capacity: '12 kg', lastUpdated: 'Sterilisasi', orderId: null, customer: null },
+  });
+
+  const [selectedLockerId, setSelectedLockerId] = useState('A01');
+
+  // =======================================================================
+  // MULTI-ORDERS DATABASE (Customer Chooses Service Speed Tier!)
+  // =======================================================================
+  const [orders, setOrders] = useState({
+    '#LDR-10245': {
+      orderId: '#LDR-10245',
+      lockerId: 'A01',
+      customerName: 'Vicky Pratama',
+      customerAvatar: 'VP',
+      speedTierKey: 'fast', // DIPILIH OLEH VICKY PRATAMA (Fast Service - 2 Hari)
+      weightKg: 3.50,
+      serviceRate: 10000,
+      adminFee: ADMIN_FEE,
+      totalDue: (3.50 * 10000) + ADMIN_FEE, // Rp 36.000
+      isPaid: false,
+      orderStepIndex: 1, // Tahap 2: Sedang ditimbang & diproses
+      notificationForCustomer: null,
+      dropOffTime: '10:02 WIB'
+    },
+    '#LDR-10244': {
+      orderId: '#LDR-10244',
+      lockerId: 'A03',
+      customerName: 'Amanda Sari',
+      customerAvatar: 'AS',
+      speedTierKey: 'regular', // DIPILIH OLEH AMANDA SARI (Regular Clean - 3 Hari)
+      weightKg: 5.20,
+      serviceRate: 7000,
+      adminFee: ADMIN_FEE,
+      totalDue: (5.20 * 7000) + ADMIN_FEE, // Rp 37.400
+      isPaid: false,
+      orderStepIndex: 1,
+      notificationForCustomer: null,
+      dropOffTime: '09:35 WIB'
+    },
+    '#LDR-10248': {
+      orderId: '#LDR-10248',
+      lockerId: 'B02',
+      customerName: 'Budi Santoso',
+      customerAvatar: 'BS',
+      speedTierKey: 'sameday', // DIPILIH OLEH BUDI SANTOSO (Same Day Express - 1 Hari)
+      weightKg: 2.30,
+      serviceRate: 15000,
+      adminFee: ADMIN_FEE,
+      totalDue: (2.30 * 15000) + ADMIN_FEE, // Rp 35.500
+      isPaid: false,
+      orderStepIndex: 0, // Baru drop-off
+      notificationForCustomer: null,
+      dropOffTime: '10:45 WIB'
+    }
+  });
+
+  // Operator Active Selected Order for Weighing
+  const [operatorTargetOrderId, setOperatorTargetOrderId] = useState('#LDR-10245');
+
+  // Active Order being processed by operator
+  const currentOperatorOrder = orders[operatorTargetOrderId] || orders['#LDR-10245'];
+
+  // Operator-specific weight input
+  const [operatorInputWeight, setOperatorInputWeight] = useState(currentOperatorOrder.weightKg.toString());
+
+  // Update input field when operator selects a different order/locker
+  const handleSelectOrderToWeigh = (orderId) => {
+    setOperatorTargetOrderId(orderId);
+    if (orders[orderId]) {
+      setOperatorInputWeight(orders[orderId].weightKg.toString());
+    }
+    sound.playSolenoidClick();
+  };
+
+  // Customer Active Order (Vicky Pratama)
+  const customerOrder = orders['#LDR-10245'];
+  const customerTierInfo = SERVICE_SPEED_TIERS[customerOrder.speedTierKey] || SERVICE_SPEED_TIERS.fast;
+
+  // Dynamic QR Pass State
+  const [qrCountdown, setQrCountdown] = useState(28);
+  const [qrToken, setQrToken] = useState('LGO-SEC-3942-F8B1-X9');
+  const [isQrShuffling, setIsQrShuffling] = useState(false);
+  const [qrWatermarkTimestamp, setQrWatermarkTimestamp] = useState('');
+
+  // Modals
+  const [showChangeAccountModal, setShowChangeAccountModal] = useState(false);
+  const [showDropOffModal, setShowDropOffModal] = useState(false);
+  const [showTopUpModal, setShowTopUpModal] = useState(false);
+  const [showScannerModal, setShowScannerModal] = useState(false);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [customerChosenService, setCustomerChosenService] = useState('fast');
+
+  // In-App Toast
+  const [toastNotification, setToastNotification] = useState(null);
+
+  const triggerToast = (title, message, icon = 'sparkles') => {
+    setToastNotification({ title, message, icon });
+    sound.playDoorOpen();
+    setTimeout(() => {
+      setToastNotification(null);
+    }, 4500);
+  };
+
+  const toggleMute = () => {
+    setIsMuted(prev => {
+      sound.muted = !prev;
+      return !prev;
+    });
+  };
+
+  // -----------------------------------------------------------------------
+  // TOTP Dynamic QR Generator & Clock Tick
+  // -----------------------------------------------------------------------
+  const generateNewToken = useCallback(() => {
+    const chars = '0123456789ABCDEF';
+    const randPart1 = Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+    const randPart2 = Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+    const randCode = Math.floor(10 + Math.random() * 89);
+    const newToken = `LGO-SEC-${randPart1}-${randPart2}-X${randCode}`;
+    setQrToken(newToken);
+    setQrCountdown(30);
+    setIsQrShuffling(true);
+    sound.playTokenRotate();
+    setTimeout(() => setIsQrShuffling(false), 300);
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const now = new Date();
+      setQrWatermarkTimestamp(
+        `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ` +
+        `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')} WIB`
+      );
+
+      setQrCountdown(prev => {
+        if (prev <= 1) {
+          generateNewToken();
+          return 30;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [generateNewToken]);
+
+  // Calculations for operator preview based on CUSTOMER'S chosen tier!
+  const targetTierInfo = SERVICE_SPEED_TIERS[currentOperatorOrder.speedTierKey] || SERVICE_SPEED_TIERS.fast;
+  const parsedWeight = parseFloat(operatorInputWeight) || 0;
+  const operatorPreviewSubtotal = Math.round(parsedWeight * targetTierInfo.ratePerKg);
+  const operatorPreviewTotal = operatorPreviewSubtotal + ADMIN_FEE;
+
+  // -----------------------------------------------------------------------
+  // CUSTOMER ACTION: Change Service Tier from Customer Side
+  // -----------------------------------------------------------------------
+  const handleCustomerSelectServiceTier = (tierKey) => {
+    sound.playSolenoidClick();
+    setCustomerChosenService(tierKey);
+    const newTier = SERVICE_SPEED_TIERS[tierKey];
+    setOrders(prev => {
+      const ord = prev['#LDR-10245'];
+      const newTotal = Math.round(ord.weightKg * newTier.ratePerKg) + ADMIN_FEE;
+      return {
+        ...prev,
+        '#LDR-10245': {
+          ...ord,
+          speedTierKey: tierKey,
+          serviceRate: newTier.ratePerKg,
+          totalDue: newTotal
+        }
+      };
+    });
+    triggerToast('Layanan Diperbarui', `Paket diubah ke ${newTier.name} (${newTier.durationLabel}).`, 'tag');
+  };
+
+  // -----------------------------------------------------------------------
+  // OPERATOR ACTION: Send Weight to Customer (Service Tier is from Customer!)
+  // -----------------------------------------------------------------------
+  const handleOperatorSendPricingToCustomer = () => {
+    if (parsedWeight <= 0) {
+      sound.playBuzzer();
+      triggerToast('Input Berat Tidak Valid', 'Silakan masukkan berat cucian lebih dari 0 kg.', 'alert-circle');
+      return;
+    }
+
+    const calculatedTotal = (parsedWeight * targetTierInfo.ratePerKg) + ADMIN_FEE;
+
+    setOrders(prev => ({
+      ...prev,
+      [currentOperatorOrder.orderId]: {
+        ...prev[currentOperatorOrder.orderId],
+        weightKg: parsedWeight,
+        totalDue: calculatedTotal,
+        isPaid: false,
+        orderStepIndex: 2, // Tahap: Pencucian
+        notificationForCustomer: `Petugas telah menimbang cucian Anda: ${parsedWeight.toFixed(2)} kg (${targetTierInfo.name}). Total Tagihan: Rp ${calculatedTotal.toLocaleString('id-ID')}`
+      }
+    }));
+
+    sound.playSuccessChime();
+    triggerToast(
+      'Tagihan Terkirim ke Customer!',
+      `Locker ${currentOperatorOrder.lockerId} (${currentOperatorOrder.customerName}): ${parsedWeight.toFixed(2)} kg &bull; Rp ${calculatedTotal.toLocaleString('id-ID')} berhasil diteruskan.`,
+      'send'
+    );
+  };
+
+  // Customer Pay Action
+  const handlePayOrder = () => {
+    if (walletBalance < customerOrder.totalDue) {
+      sound.playBuzzer();
+      triggerToast('Saldo Tidak Cukup', 'Silakan top up LaundryGO Pay Anda terlebih dahulu.', 'wallet');
+      return;
+    }
+    sound.playPaymentChime();
+    setWalletBalance(prev => prev - customerOrder.totalDue);
+    setOrders(prev => ({
+      ...prev,
+      '#LDR-10245': { ...prev['#LDR-10245'], isPaid: true, orderStepIndex: 3 }
+    }));
+    triggerToast('Pembayaran Berhasil', `Tagihan Rp ${customerOrder.totalDue.toLocaleString('id-ID')} lunas. Pintu Locker ${customerOrder.lockerId} siap dibuka.`, 'check');
+  };
+
+  const handleTopUp = (amount) => {
+    sound.playPaymentChime();
+    setWalletBalance(prev => prev + amount);
+    setShowTopUpModal(false);
+    triggerToast('Top Up Berhasil', `Saldo bertambah Rp ${amount.toLocaleString('id-ID')}.`, 'wallet');
+  };
+
+  // Customer Scan QR at Locker
+  const handleOpenScanner = () => {
+    sound.playScanBeep();
+    setShowScannerModal(true);
+  };
+
+  const handleConfirmScannerAction = () => {
+    sound.playSolenoidClick();
+    setTimeout(() => {
+      sound.playDoorOpen();
+      sound.playSuccessChime();
+      setShowScannerModal(false);
+      setLockers(prev => ({
+        ...prev,
+        A01: { ...prev.A01, status: 'AVAILABLE', orderId: null, customer: null }
+      }));
+      setOrders(prev => ({
+        ...prev,
+        '#LDR-10245': { ...prev['#LDR-10245'], orderStepIndex: 4 }
+      }));
+      triggerToast('Locker A01 Terbuka!', 'Pintu solenoid otomatis terbuka. Silakan ambil pakaian bersih Anda.', 'box');
+    }, 1000);
+  };
+
+  // Drop-off flow
+  const handleConfirmDropOff = (lockerId = 'A02') => {
+    sound.playSolenoidClick();
+    sound.playDoorOpen();
+    setShowDropOffModal(false);
+    setLockers(prev => ({
+      ...prev,
+      [lockerId]: { ...prev[lockerId], status: 'OCCUPIED', orderId: '#LDR-10249', customer: activeAccount.name }
+    }));
+    triggerToast(`Locker ${lockerId} Terbuka`, 'Masukkan laundry bag Anda dan tutup pintu hingga terkunci rapat.', 'box');
+  };
+
+  // Operator Handlers
+  const handleOperatorPickupFromLocker = (lockerId) => {
+    sound.playSolenoidClick();
+    sound.playDoorOpen();
+    setLockers(prev => ({
+      ...prev,
+      [lockerId]: { ...prev[lockerId], status: 'PROCESSING' }
+    }));
+    triggerToast(`Pintu Locker ${lockerId} Terbuka`, `Cucian kotor diambil petugas untuk dibawa ke proses penimbangan & pencucian.`, 'key');
+  };
+
+  const handleOperatorReturnCleanLocker = (lockerId, orderId) => {
+    sound.playSolenoidClick();
+    sound.playDoorClose();
+    sound.playSuccessChime();
+    setLockers(prev => ({
+      ...prev,
+      [lockerId]: { ...prev[lockerId], status: 'READY FOR PICKUP', orderId }
+    }));
+    if (orders[orderId]) {
+      setOrders(prev => ({
+        ...prev,
+        [orderId]: { ...prev[orderId], orderStepIndex: 3 }
+      }));
+    }
+    generateNewToken();
+    triggerToast(`Locker ${lockerId} Terkunci`, `Pakaian bersih telah dimasukkan. Notifikasi dan QR Code diterbitkan ke customer.`, 'sparkles');
+  };
+
+  const handleOperatorMasterUnlock = (lockerId) => {
+    sound.playSolenoidClick();
+    sound.playDoorOpen();
+    triggerToast(`Master Solenoid ${lockerId} Terbuka`, `Otoritas Petugas OP-042 diterima. Pintu ${lockerId} terbuka manual.`, 'unlock');
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-100 flex flex-col font-sans text-slate-800 antialiased selection:bg-sky-500 selection:text-white">
+
+      {/* =================================================================== */}
+      {/* 1. TOP NAVIGATION SWITCHER BANNER (RESPONSIF MOBILE DUAL POV)       */}
+      {/* =================================================================== */}
+      <nav className="w-full bg-slate-900 text-white shadow-md sticky top-0 z-50 border-b border-slate-800">
+        <div className="max-w-md mx-auto px-3 py-2 flex flex-col gap-2">
+          {/* Baris 1: Logo + Lokasi SBH + Suara Toggle */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <div className="w-6 h-6 rounded-lg bg-sky-500 text-white flex items-center justify-center flex-none shadow-xs">
+                <Icon name="sparkles" className="w-3.5 h-3.5" />
+              </div>
+              <div className="flex items-center space-x-1.5">
+                <span className="font-extrabold text-sm tracking-tight">Laundry<span className="text-sky-400">GO</span></span>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700 whitespace-nowrap">
+                  SBH PresUniv
+                </span>
+              </div>
+            </div>
+
+            {/* Sound Mute Toggle */}
+            <button
+              onClick={toggleMute}
+              className={`p-1.5 px-2 rounded-xl border text-xs font-semibold flex items-center space-x-1 transition-all ${
+                isMuted
+                  ? 'bg-rose-950/60 text-rose-400 border-rose-800'
+                  : 'bg-slate-800 text-slate-300 border-slate-700 hover:border-slate-600'
+              }`}
+              title={isMuted ? 'Suara Dimatikan' : 'Suara Aktif'}
+            >
+              <Icon name={isMuted ? "volume-x" : "volume"} className="w-3.5 h-3.5" />
+              <span className="text-[10px] hidden sm:inline">{isMuted ? 'Mute' : 'Sound'}</span>
+            </button>
+          </div>
+
+          {/* Baris 2: Segmented POV Toggle 50/50 */}
+          <div className="grid grid-cols-2 p-1 bg-slate-950/90 rounded-xl border border-slate-800 gap-1 text-center">
+            <button
+              onClick={() => {
+                setAppMode('customer');
+                sound.playSolenoidClick();
+              }}
+              className={`py-1.5 px-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center space-x-1.5 whitespace-nowrap ${
+                appMode === 'customer'
+                  ? 'bg-sky-600 text-white shadow-xs'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Icon name="user" className="w-3.5 h-3.5" />
+              <span>POV Customer</span>
+            </button>
+
+            <button
+              onClick={() => {
+                setAppMode('operator');
+                sound.playSolenoidClick();
+              }}
+              className={`py-1.5 px-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center space-x-1.5 whitespace-nowrap ${
+                appMode === 'operator'
+                  ? 'bg-amber-500 text-slate-950 shadow-xs font-black'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Icon name="key" className="w-3.5 h-3.5" />
+              <span>POV Operator</span>
+            </button>
+          </div>
+        </div>
+      </nav>
+
+      {/* =================================================================== */}
+      {/* 2. MAIN MOBILE APPLICATION VIEWPORT                                 */}
+      {/* =================================================================== */}
+      <main className="w-full max-w-md mx-auto min-h-[calc(100vh-50px)] bg-white flex flex-col shadow-sm border-x border-slate-200 relative flex-1 pb-20">
+
+        {/* Floating Toast */}
+        {toastNotification && (
+          <div className="absolute top-3 left-3 right-3 z-50 animate-in fade-in slide-in-from-top-4 duration-300">
+            <div className="bg-white/95 border border-sky-400 text-slate-800 p-3 rounded-2xl shadow-xl backdrop-blur-md flex items-start space-x-2.5">
+              <div className="w-8 h-8 rounded-xl bg-sky-50 text-sky-600 border border-sky-100 flex items-center justify-center flex-none">
+                <Icon name={toastNotification.icon} className="w-4 h-4" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-bold text-sky-800">{toastNotification.title}</p>
+                <p className="text-[11px] text-slate-600 leading-tight mt-0.5">{toastNotification.message}</p>
+              </div>
+              <button
+                onClick={() => setToastNotification(null)}
+                className="text-slate-400 hover:text-slate-600 text-xs font-bold p-1"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ----------------------------------------------------------------- */}
+        {/* HEADER APLIKASI (CUSTOMER VS OPERATOR)                            */}
+        {/* ----------------------------------------------------------------- */}
+        {appMode === 'customer' ? (
+          <header className="px-3.5 pt-3 pb-3 bg-white border-b border-slate-100 flex-none z-30">
+            <div className="flex items-center justify-between mb-2.5">
+              <div className="flex items-center space-x-2.5 min-w-0 flex-1 mr-2">
+                <div
+                  onClick={() => setActiveTab('profile')}
+                  className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-sky-600 to-cyan-500 flex items-center justify-center font-black text-white text-xs shadow-md shadow-sky-500/20 cursor-pointer flex-none"
+                >
+                  {activeAccount.avatar}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center space-x-1.5 flex-wrap">
+                    <span className="text-xs font-extrabold text-slate-900 truncate">{activeAccount.name}</span>
+                    <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-amber-50 text-amber-700 border border-amber-200 whitespace-nowrap">
+                      {activeAccount.tier}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-slate-500 truncate">
+                    SBH PresUniv &bull; {activeAccount.primaryKiosk}
+                  </div>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setShowHistoryModal(true)}
+                className="flex-none flex items-center space-x-1 px-2.5 py-1.5 rounded-xl bg-slate-50 hover:bg-sky-50 text-slate-700 hover:text-sky-600 border border-slate-200 transition-all text-xs font-semibold"
+                title="Riwayat Pesanan"
+              >
+                <Icon name="clock" className="w-3.5 h-3.5 text-sky-600" />
+                <span className="text-[11px] whitespace-nowrap">Riwayat</span>
+              </button>
+            </div>
+
+            {/* LaundryGO Pay Digital Wallet */}
+            <div className="bg-gradient-to-r from-sky-600 via-cyan-600 to-sky-700 p-3 rounded-2xl text-white shadow-md shadow-sky-600/20 flex items-center justify-between">
+              <div className="flex items-center space-x-2.5 min-w-0">
+                <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center text-white flex-none">
+                  <Icon name="wallet" className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <span className="text-[9px] uppercase font-bold tracking-wider text-sky-100 block">Saldo LaundryGO Pay</span>
+                  <div className="text-sm font-black tracking-tight truncate">
+                    Rp {walletBalance.toLocaleString('id-ID')}
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowTopUpModal(true)}
+                className="flex-none ml-2 px-3 py-1.5 rounded-xl bg-white hover:bg-sky-50 text-sky-700 text-xs font-extrabold transition-all shadow-xs active:scale-95 whitespace-nowrap"
+              >
+                + Top Up
+              </button>
+            </div>
+          </header>
+        ) : (
+          /* OPERATOR MODE HEADER (Rapi & Tidak Wrap) */
+          <header className="px-3.5 py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 text-white flex-none z-30 shadow-xs">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2 min-w-0 flex-1 mr-2">
+                <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center font-bold text-white text-xs flex-none shadow-xs">
+                  <Icon name="key" className="w-4 h-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-black tracking-wide truncate">
+                    LAUNDRY PROVIDER WORKSTATION
+                  </div>
+                  <div className="text-[10px] text-amber-100 truncate">
+                    Staf: Kurniawan Santoso (OP-042) &bull; SBH PresUniv
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex-none flex items-center space-x-1.5 px-2.5 py-1 rounded-full bg-black/15 text-white font-mono text-[10px] font-bold border border-white/20 whitespace-nowrap">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-300"></span>
+                <span>Live Sinkron</span>
+              </div>
+            </div>
+          </header>
+        )}
+
+        {/* ----------------------------------------------------------------- */}
+        {/* MAIN SCROLLABLE CONTENT BODY                                      */}
+        {/* ----------------------------------------------------------------- */}
+        <div className="flex-1 px-4 py-3 overflow-y-auto space-y-3.5 bg-slate-50/60 pb-24">
+
+          {/* =============================================================== */}
+          {/* CUSTOMER TAB 1: LOCKERS & CUSTOMER SERVICE CHOICE               */}
+          {/* =============================================================== */}
+          {appMode === 'customer' && activeTab === 'lockers' && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center space-x-1">
+                    <Icon name="box" className="w-3.5 h-3.5 text-sky-600" />
+                    <span>Locker Pintar SBH</span>
+                  </h2>
+                  <p className="text-[10px] text-slate-500">SBH President University &bull; Lobby Utama</p>
+                </div>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center space-x-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                  <span>Online</span>
+                </span>
+              </div>
+
+              {/* PEMILIHAN SERVICE OLEH CUSTOMER (Customer Menentukan Paket!) */}
+              <div className="bg-white p-3 rounded-2xl border border-slate-200/90 shadow-2xs space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-slate-700 flex items-center space-x-1">
+                    <Icon name="tag" className="w-3.5 h-3.5 text-sky-600" />
+                    <span>Pilih Paket Service Anda:</span>
+                  </span>
+                  <span className="text-[10px] font-bold text-sky-700 bg-sky-50 px-2 py-0.5 rounded-md border border-sky-200">
+                    Rp {SERVICE_SPEED_TIERS[customerOrder.speedTierKey].ratePerKg.toLocaleString('id-ID')}/kg
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-3 gap-1.5">
+                  {Object.keys(SERVICE_SPEED_TIERS).map(key => {
+                    const tier = SERVICE_SPEED_TIERS[key];
+                    const isSelected = customerOrder.speedTierKey === key;
+                    return (
+                      <button
+                        key={key}
+                        onClick={() => handleCustomerSelectServiceTier(key)}
+                        className={`py-2 px-1 rounded-xl text-center border transition-all ${
+                          isSelected
+                            ? 'bg-sky-600 text-white border-sky-600 shadow-sm ring-2 ring-sky-300 font-extrabold'
+                            : 'bg-slate-50 text-slate-600 border-slate-200 hover:border-slate-300'
+                        }`}
+                      >
+                        <div className="text-[11px] font-black">{tier.durationLabel}</div>
+                        <div className={`text-[9px] ${isSelected ? 'text-sky-100' : 'text-slate-400'}`}>
+                          Rp {tier.ratePerKg.toLocaleString('id-ID')}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] text-slate-500 italic pt-0.5">
+                  *Paket yang Anda pilih di sini akan langsung menjadi dasar perhitungan saat pakaian ditimbang oleh petugas.
+                </p>
+              </div>
+
+              {/* 2x3 Locker Grid */}
+              <div className="grid grid-cols-2 gap-2.5">
+                {Object.keys(lockers).map((key) => {
+                  const locker = lockers[key];
+                  const cfg = LOCKER_STATUS_CONFIG[locker.status] || LOCKER_STATUS_CONFIG.AVAILABLE;
+                  const isSelected = selectedLockerId === key;
+
+                  return (
+                    <div
+                      key={key}
+                      onClick={() => {
+                        setSelectedLockerId(key);
+                        sound.playSolenoidClick();
+                      }}
+                      className={`p-3 rounded-2xl border transition-all cursor-pointer relative bg-white ${
+                        isSelected
+                          ? 'border-sky-500 ring-2 ring-sky-500/20 shadow-md shadow-sky-500/10'
+                          : 'border-slate-200/90 hover:border-slate-300 shadow-2xs'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-sm font-black text-slate-900">{key}</span>
+                        <span className={`w-2 h-2 rounded-full ${cfg.dot} ${locker.status === 'READY FOR PICKUP' ? 'animate-ping' : ''}`}></span>
+                      </div>
+
+                      <div className={`text-[9px] font-black px-1.5 py-0.5 rounded-md inline-block uppercase mb-1.5 border ${cfg.bg} ${cfg.text} ${cfg.border}`}>
+                        {cfg.label}
+                      </div>
+
+                      <div className="text-[10px] text-slate-500 space-y-0.5">
+                        <div>Kapasitas: {locker.capacity}</div>
+                        <div className="text-slate-400 flex items-center space-x-1">
+                          <Icon name="sparkles" className="w-2.5 h-2.5 text-sky-500" />
+                          <span>Sanitasi UV-C</span>
+                        </div>
+                      </div>
+
+                      {locker.status === 'AVAILABLE' && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedLockerId(key);
+                            setShowDropOffModal(true);
+                          }}
+                          className="w-full mt-2.5 py-1.5 rounded-xl bg-sky-50 hover:bg-sky-600 text-sky-700 hover:text-white border border-sky-200 hover:border-sky-600 text-[10px] font-black transition-all text-center block shadow-2xs"
+                        >
+                          Drop-off Cucian
+                        </button>
+                      )}
+
+                      {locker.status === 'READY FOR PICKUP' && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActiveTab('qr');
+                            sound.playSolenoidClick();
+                          }}
+                          className="w-full mt-2.5 py-1.5 rounded-xl bg-gradient-to-r from-sky-500 to-cyan-500 hover:from-sky-600 hover:to-cyan-600 text-white text-[10px] font-black transition-all text-center block shadow-xs"
+                        >
+                          Buka & Ambil
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* =============================================================== */}
+          {/* CUSTOMER TAB 2: ACTIVE ORDER TRACKER                            */}
+          {/* =============================================================== */}
+          {appMode === 'customer' && activeTab === 'tracker' && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-xs font-black text-slate-800 uppercase tracking-wider">
+                    Pelacakan Cucian Aktif
+                  </h2>
+                  <p className="text-[10px] text-slate-500">SBH President University &bull; Locker {customerOrder.lockerId}</p>
+                </div>
+                <span className="text-[11px] font-black font-mono text-sky-600 bg-sky-50 px-2 py-0.5 rounded-lg border border-sky-200">
+                  {customerOrder.orderId}
+                </span>
+              </div>
+
+              {/* Alert Tagihan Terkini dari Operator */}
+              {customerOrder.notificationForCustomer && (
+                <div className="p-3 bg-sky-50 border border-sky-300 rounded-2xl flex items-start space-x-2.5">
+                  <div className="w-6 h-6 rounded-lg bg-sky-600 text-white flex items-center justify-center flex-none mt-0.5">
+                    <Icon name="tag" className="w-3.5 h-3.5" />
+                  </div>
+                  <div className="flex-1">
+                    <div className="text-xs font-bold text-sky-900">Tagihan Masuk dari Petugas:</div>
+                    <div className="text-[11px] text-sky-800 leading-snug mt-0.5">{customerOrder.notificationForCustomer}</div>
+                  </div>
+                </div>
+              )}
+
+              {/* 5-Stage Stepper Workflow */}
+              <div className="bg-white p-3.5 rounded-2xl border border-slate-200/90 shadow-2xs">
+                <div className="text-[11px] font-bold text-slate-800 mb-3 flex items-center justify-between">
+                  <span>Tahapan Pengerjaan Laundry</span>
+                  <span className="text-sky-600 font-mono text-[10px] font-extrabold">Tahap {customerOrder.orderStepIndex + 1} dari 5</span>
+                </div>
+
+                <div className="space-y-3 relative before:absolute before:left-3.5 before:top-2 before:bottom-2 before:w-0.5 before:bg-slate-200">
+                  {[
+                    { label: `Drop-off di Locker ${customerOrder.lockerId} oleh Vicky Pratama`, time: '10:02 WIB' },
+                    { label: 'Diambil Petugas Laundry (OP-042)', time: '10:24 WIB' },
+                    { label: `Ditimbang & Dicuci (${customerTierInfo.name} - ${customerOrder.weightKg.toFixed(2)} kg)`, time: '11:15 WIB' },
+                    { label: `Pakaian Bersih Siap di Locker ${customerOrder.lockerId}`, time: '13:45 WIB' },
+                    { label: 'Selesai & Diambil Pelanggan', time: customerOrder.orderStepIndex === 4 ? '14:10 WIB' : 'Menunggu Pengambilan' }
+                  ].map((step, idx) => {
+                    const isCurrent = customerOrder.orderStepIndex === idx;
+                    const isPast = customerOrder.orderStepIndex > idx;
+
+                    return (
+                      <div key={idx} className="flex items-start space-x-3 relative z-10">
+                        <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-all ${
+                          isPast
+                            ? 'bg-emerald-500 text-white shadow-xs'
+                            : isCurrent
+                            ? 'bg-sky-600 text-white ring-4 ring-sky-100 shadow-sm'
+                            : 'bg-slate-100 text-slate-400 border border-slate-200'
+                        }`}>
+                          {isPast ? '✓' : idx + 1}
+                        </div>
+                        <div className="flex-1 pt-0.5">
+                          <div className={`text-xs ${isCurrent ? 'text-sky-700 font-bold' : isPast ? 'text-slate-800 font-semibold' : 'text-slate-400'}`}>
+                            {step.label}
+                          </div>
+                          <div className="text-[10px] text-slate-400">{step.time}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Rincian Tagihan */}
+              <div className="bg-white p-3.5 rounded-2xl border border-slate-200/90 shadow-2xs space-y-2 text-xs">
+                <div className="flex justify-between pb-1.5 border-b border-slate-100 text-slate-500">
+                  <span>Nama Pelanggan</span>
+                  <span className="font-bold text-slate-800">{activeAccount.name}</span>
+                </div>
+                <div className="flex justify-between pb-1.5 border-b border-slate-100 text-slate-500">
+                  <span>Locker Penempatan</span>
+                  <span className="font-bold text-sky-600">LOCKER {customerOrder.lockerId}</span>
+                </div>
+                <div className="flex justify-between pb-1.5 border-b border-slate-100 text-slate-500">
+                  <span>Paket Pilihan Customer</span>
+                  <span className="font-semibold text-slate-800">{customerTierInfo.name} ({customerTierInfo.durationLabel})</span>
+                </div>
+                <div className="flex justify-between pb-1.5 border-b border-slate-100 text-slate-500">
+                  <span>Berat Cucian Ditimbang</span>
+                  <span className="font-bold text-slate-900">{customerOrder.weightKg.toFixed(2)} kg (Netto)</span>
+                </div>
+                <div className="flex justify-between pb-1.5 border-b border-slate-100 text-slate-500">
+                  <span>Tarif ({customerOrder.weightKg.toFixed(2)} kg x Rp {customerTierInfo.ratePerKg.toLocaleString('id-ID')})</span>
+                  <span className="font-semibold text-slate-800">
+                    Rp {Math.round(customerOrder.weightKg * customerTierInfo.ratePerKg).toLocaleString('id-ID')}
+                  </span>
+                </div>
+                <div className="flex justify-between pb-1.5 border-b border-slate-100 text-slate-500">
+                  <span className="flex items-center space-x-1 text-sky-700 font-medium">
+                    <span>Biaya Admin Transaksi</span>
+                    <span className="text-[9px] bg-sky-50 px-1 rounded border border-sky-200">Tetap</span>
+                  </span>
+                  <span className="font-bold text-sky-700">Rp {ADMIN_FEE.toLocaleString('id-ID')}</span>
+                </div>
+
+                <div className="flex justify-between pt-1 font-bold text-slate-900">
+                  <span>Total Tagihan:</span>
+                  <span className="text-sm font-black text-sky-700">
+                    Rp {customerOrder.totalDue.toLocaleString('id-ID')}
+                  </span>
+                </div>
+
+                <div className="flex justify-between items-center pt-1">
+                  <span className="text-slate-500">Status Pembayaran:</span>
+                  <span className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase ${
+                    customerOrder.isPaid ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-amber-50 text-amber-700 border border-amber-200'
+                  }`}>
+                    {customerOrder.isPaid ? 'LUNAS (PAID)' : 'MENUNGGU PEMBAYARAN'}
+                  </span>
+                </div>
+
+                {!customerOrder.isPaid && (
+                  <button
+                    onClick={handlePayOrder}
+                    className="w-full mt-2 py-2.5 rounded-xl bg-gradient-to-r from-sky-500 to-cyan-500 hover:from-sky-600 hover:to-cyan-600 text-white font-black text-xs shadow-md shadow-sky-500/25 transition-all flex items-center justify-center space-x-2"
+                  >
+                    <Icon name="wallet" className="w-4 h-4" />
+                    <span>Bayar Sekarang (Rp {customerOrder.totalDue.toLocaleString('id-ID')})</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* =============================================================== */}
+          {/* CUSTOMER TAB 3: ADVANCE RANDOMIZE QR ACCESS PASS                */}
+          {/* =============================================================== */}
+          {appMode === 'customer' && activeTab === 'qr' && (
+            <div className="space-y-3 pt-1 text-center">
+              <div>
+                <h2 className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center justify-center space-x-1">
+                  <Icon name="qr-code" className="w-3.5 h-3.5 text-sky-600" />
+                  <span>Optical Dynamic Access Pass</span>
+                </h2>
+                <p className="text-[10px] text-slate-500">Arahkan layar ke kamera scanner Locker SBH</p>
+              </div>
+
+              {/* Dynamic QR Card */}
+              <div className="relative mx-auto w-64 p-4 rounded-3xl bg-white border-2 border-sky-400 shadow-xl overflow-hidden">
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-cyan-400/10 to-transparent pointer-events-none transform -skew-x-12 animate-pulse"></div>
+
+                <div className="mb-2 text-center">
+                  <span className="text-[10px] font-extrabold px-2.5 py-0.5 rounded-full bg-sky-50 text-sky-700 border border-sky-200 inline-block">
+                    AKSES PENGAMBILAN &bull; LOCKER {customerOrder.lockerId}
+                  </span>
+                </div>
+
+                {/* SVG QR Matrix */}
+                <div className={`relative w-44 h-44 mx-auto p-2 bg-white rounded-2xl border border-slate-200 flex items-center justify-center transition-all ${isQrShuffling ? 'scale-95 opacity-80' : 'scale-100 opacity-100'}`}>
+                  <div className="absolute inset-x-0 h-1 bg-gradient-to-r from-transparent via-sky-500 to-transparent animate-laser-sweep pointer-events-none z-20"></div>
+
+                  <svg className="w-full h-full text-slate-900" viewBox="0 0 100 100" fill="currentColor">
+                    <rect x="6" y="6" width="26" height="26" rx="4" fill="#0f172a" />
+                    <rect x="10" y="10" width="18" height="18" rx="2" fill="#ffffff" />
+                    <rect x="14" y="14" width="10" height="10" rx="1" fill="#0284c7" />
+
+                    <rect x="68" y="6" width="26" height="26" rx="4" fill="#0f172a" />
+                    <rect x="72" y="10" width="18" height="18" rx="2" fill="#ffffff" />
+                    <rect x="76" y="14" width="10" height="10" rx="1" fill="#0284c7" />
+
+                    <rect x="6" y="68" width="26" height="26" rx="4" fill="#0f172a" />
+                    <rect x="10" y="72" width="18" height="18" rx="2" fill="#ffffff" />
+                    <rect x="14" y="76" width="10" height="10" rx="1" fill="#0284c7" />
+
+                    <rect x="38" y="12" width="6" height="6" fill="#0f172a" rx="1"/>
+                    <rect x="48" y="12" width="6" height="6" fill="#0284c7" rx="1"/>
+                    <rect x="58" y="12" width="6" height="6" fill="#0f172a" rx="1"/>
+
+                    <rect x="38" y="24" width="6" height="6" fill="#0284c7" rx="1"/>
+                    <rect x="48" y="24" width="6" height="6" fill="#0f172a" rx="1"/>
+                    <rect x="58" y="24" width="6" height="6" fill="#0f172a" rx="1"/>
+
+                    <circle cx="50" cy="50" r="11" fill="#0284c7" />
+                    <circle cx="50" cy="50" r="7" fill="#ffffff" />
+                    <circle cx="50" cy="50" r="4" fill="#0284c7" />
+
+                    <rect x="38" y="68" width="6" height="6" fill="#0f172a" rx="1"/>
+                    <rect x="48" y="68" width="6" height="6" fill="#0284c7" rx="1"/>
+                    <rect x="58" y="68" width="6" height="6" fill="#0f172a" rx="1"/>
+                    <rect x="68" y="68" width="6" height="6" fill="#0f172a" rx="1"/>
+                    <rect x="78" y="68" width="6" height="6" fill="#0284c7" rx="1"/>
+                    <rect x="88" y="68" width="6" height="6" fill="#0f172a" rx="1"/>
+                  </svg>
+                </div>
+
+                <div className="mt-2.5 font-mono text-[10px] font-black text-slate-800 tracking-tight">
+                  {qrToken}
+                </div>
+                <div className="text-[8px] font-mono text-slate-400">
+                  {qrWatermarkTimestamp}
+                </div>
+              </div>
+
+              {/* Countdown Bar */}
+              <div className="flex items-center justify-center space-x-2 text-xs font-semibold text-slate-600">
+                <span className="text-[11px]">Token Otomatis Berganti dalam:</span>
+                <span className="font-mono font-bold text-sky-700">{qrCountdown}s</span>
+                <button
+                  onClick={generateNewToken}
+                  className="p-1 rounded-lg bg-slate-100 hover:bg-sky-100 text-slate-600 hover:text-sky-600 transition-all"
+                  title="Perbarui Token"
+                >
+                  <Icon name="refresh" className={`w-3.5 h-3.5 ${isQrShuffling ? 'animate-spin' : ''}`} />
+                </button>
+              </div>
+
+              {/* Action Button: Scan QR di Kiosk Locker */}
+              <button
+                onClick={handleOpenScanner}
+                className="w-full py-3 rounded-2xl bg-gradient-to-r from-sky-600 via-cyan-600 to-sky-700 hover:from-sky-500 hover:to-cyan-500 text-white font-black text-xs shadow-lg shadow-sky-600/30 transition-all flex items-center justify-center space-x-2"
+              >
+                <Icon name="scan" className="w-4 h-4" />
+                <span>Scan QR di Kiosk Locker SBH</span>
+              </button>
+            </div>
+          )}
+
+          {/* =============================================================== */}
+          {/* CUSTOMER TAB 4: WALLET                                          */}
+          {/* =============================================================== */}
+          {appMode === 'customer' && activeTab === 'wallet' && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-xs font-black text-slate-800 uppercase tracking-wider">
+                    Dompet Digital LaundryGO
+                  </h2>
+                  <p className="text-[10px] text-slate-500">Locker SBH &bull; President University</p>
+                </div>
+                <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                  Terverifikasi
+                </span>
+              </div>
+
+              <div className="bg-gradient-to-br from-sky-600 via-cyan-600 to-blue-700 p-4 rounded-3xl shadow-lg shadow-sky-600/25 text-white space-y-3">
+                <div className="flex justify-between items-center text-xs opacity-90">
+                  <span className="font-bold tracking-wide">LaundryGO Member Card</span>
+                  <span className="font-mono text-[10px] bg-white/20 px-2 py-0.5 rounded-full">{activeAccount.tier}</span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-sky-100 uppercase tracking-wider font-semibold">Saldo Tersedia</span>
+                  <div className="text-2xl font-black tracking-tight">
+                    Rp {walletBalance.toLocaleString('id-ID')}
+                  </div>
+                </div>
+                <div className="pt-2 flex justify-between items-center text-xs border-t border-white/20">
+                  <span className="font-bold">{activeAccount.name}</span>
+                  <span className="font-mono text-[11px] opacity-80">{activeAccount.points} Poin</span>
+                </div>
+              </div>
+
+              <div className="bg-white p-3.5 rounded-2xl border border-slate-200/90 shadow-2xs space-y-2.5">
+                <span className="text-xs font-bold text-slate-800">Isi Saldo Cepat:</span>
+                <div className="grid grid-cols-2 gap-2">
+                  {[20000, 50000, 100000, 200000].map(amt => (
+                    <button
+                      key={amt}
+                      onClick={() => handleTopUp(amt)}
+                      className="py-2.5 px-3 rounded-xl bg-slate-50 hover:bg-sky-50 text-slate-800 hover:text-sky-700 text-xs font-black transition-all border border-slate-200 hover:border-sky-300 text-left flex justify-between items-center shadow-2xs"
+                    >
+                      <span>+ Rp {amt.toLocaleString('id-ID')}</span>
+                      <Icon name="chevron-right" className="w-3.5 h-3.5 text-slate-400" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* =============================================================== */}
+          {/* CUSTOMER TAB 5: PROFILE                                         */}
+          {/* =============================================================== */}
+          {appMode === 'customer' && activeTab === 'profile' && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-xs font-black text-slate-800 uppercase tracking-wider">
+                    Profil Pengguna
+                  </h2>
+                  <p className="text-[10px] text-slate-500">SBH President University</p>
+                </div>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-50 text-sky-700 border border-sky-200">
+                  {activeAccount.tier}
+                </span>
+              </div>
+
+              <div className="bg-white p-3.5 rounded-2xl border border-slate-200/90 shadow-2xs space-y-3">
+                <div className="flex items-center space-x-3">
+                  <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-sky-600 to-cyan-500 flex items-center justify-center font-black text-white text-base shadow-md shadow-sky-500/20">
+                    {activeAccount.avatar}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="text-sm font-extrabold text-slate-900 truncate">{activeAccount.name}</h3>
+                    <p className="text-[11px] text-slate-500 truncate">{activeAccount.email}</p>
+                    <p className="text-[10px] text-slate-400">{activeAccount.phone}</p>
+                  </div>
+                </div>
+
+                <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs space-y-1">
+                  <div className="text-[10px] font-bold uppercase text-slate-500">Alamat & Unit Locker Utama:</div>
+                  <div className="text-[11px] font-semibold text-slate-800 leading-snug">{activeAccount.location}</div>
+                  <div className="text-[10px] text-sky-700 font-bold flex items-center space-x-1">
+                    <Icon name="box" className="w-3 h-3 text-sky-600" />
+                    <span>Locker SBH</span>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => {
+                    sound.playSolenoidClick();
+                    setShowChangeAccountModal(true);
+                  }}
+                  className="w-full py-2 px-3 rounded-xl bg-slate-100 hover:bg-sky-50 text-slate-800 hover:text-sky-700 font-bold text-xs border border-slate-200 hover:border-sky-300 transition-all flex items-center justify-center space-x-2"
+                >
+                  <Icon name="users" className="w-4 h-4 text-sky-600" />
+                  <span>Ganti Akun (Change Account)</span>
+                </button>
+
+                {/* Tombol Akses Cepat Mode Operator Laundry */}
+                <div className="pt-2 border-t border-slate-100">
+                  <div className="p-3 rounded-xl bg-amber-50/90 border border-amber-200 flex items-center justify-between">
+                    <div className="min-w-0 flex-1 mr-2">
+                      <div className="text-xs font-black text-slate-900 flex items-center space-x-1.5">
+                        <Icon name="key" className="w-3.5 h-3.5 text-amber-600" />
+                        <span>Mode Operator Laundry</span>
+                      </div>
+                      <p className="text-[10px] text-slate-500 mt-0.5 leading-snug">
+                        Khusus mitra laundry: timbang cucian, penetapan tarif & kelola locker.
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setAppMode('operator');
+                        sound.playSolenoidClick();
+                      }}
+                      className="flex-none px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-black shadow-xs transition-all active:scale-95 whitespace-nowrap"
+                    >
+                      Buka POV
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <div className="bg-white p-2.5 rounded-2xl border border-slate-200/90 text-center shadow-2xs">
+                  <div className="text-sm font-black text-sky-600">34</div>
+                  <div className="text-[9px] text-slate-500 font-semibold">Total Order</div>
+                </div>
+                <div className="bg-white p-2.5 rounded-2xl border border-slate-200/90 text-center shadow-2xs">
+                  <div className="text-sm font-black text-emerald-600">142 kg</div>
+                  <div className="text-[9px] text-slate-500 font-semibold">Cucian Bersih</div>
+                </div>
+                <div className="bg-white p-2.5 rounded-2xl border border-slate-200/90 text-center shadow-2xs">
+                  <div className="text-sm font-black text-amber-600">68 Jam</div>
+                  <div className="text-[9px] text-slate-500 font-semibold">Waktu Hemat</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* =============================================================== */}
+          {/* OPERATOR WORKSTATION (LAUNDRY PROVIDER MODE)                    */}
+          {/* =============================================================== */}
+          {appMode === 'operator' && (
+            <div className="space-y-3">
+              {/* Operator Sub-Tab Switcher (4 Sub-Tabs Lengkap) */}
+              <div className="grid grid-cols-4 p-1 bg-white rounded-xl border border-slate-200 shadow-2xs gap-1">
+                {[
+                  { id: 'weighing', label: 'Berat & Tarif', icon: 'scale' },
+                  { id: 'intake', label: 'Ambil Kotor', icon: 'box' },
+                  { id: 'return', label: 'Setor Bersih', icon: 'sparkles' },
+                  { id: 'lockers_overview', label: 'Status Locker', icon: 'layers' }
+                ].map(tab => (
+                  <button
+                    key={tab.id}
+                    onClick={() => {
+                      setOperatorTab(tab.id);
+                      sound.playSolenoidClick();
+                    }}
+                    className={`py-1.5 px-0.5 flex flex-col items-center justify-center rounded-lg transition-all text-center ${
+                      operatorTab === tab.id
+                        ? 'bg-amber-500 text-slate-950 shadow-xs font-black'
+                        : 'text-slate-600 hover:text-slate-900 font-medium'
+                    }`}
+                  >
+                    <Icon name={tab.icon} className="w-3.5 h-3.5 mb-0.5" />
+                    <span className="text-[9px] leading-tight whitespace-nowrap">{tab.label}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* ------------------------------------------------------------- */}
+              {/* OPERATOR SUB-TAB 1: INPUT BERAT & SERVICE CHOICE DARI CUSTOMER*/}
+              {/* ------------------------------------------------------------- */}
+              {operatorTab === 'weighing' && (
+                <div className="space-y-3">
+                  {/* Selector Pilihan Locker yang Ingin Diproses oleh Operator */}
+                  <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-2xs space-y-2">
+                    <div className="flex items-center justify-between text-xs font-extrabold text-slate-800">
+                      <span className="flex items-center space-x-1.5">
+                        <Icon name="box" className="w-3.5 h-3.5 text-amber-500" />
+                        <span>Pilih Cucian Locker untuk Ditimbang:</span>
+                      </span>
+                      <span className="text-[10px] text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 font-bold">
+                        {Object.keys(orders).length} Pesanan Aktif
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {Object.keys(orders).map(orderKey => {
+                        const ord = orders[orderKey];
+                        const isSelected = operatorTargetOrderId === orderKey;
+                        return (
+                          <button
+                            key={orderKey}
+                            onClick={() => handleSelectOrderToWeigh(orderKey)}
+                            className={`p-2 rounded-xl border text-center transition-all ${
+                              isSelected
+                                ? 'bg-amber-500 text-slate-950 border-amber-500 shadow-xs ring-2 ring-amber-300 font-black'
+                                : 'bg-slate-50 text-slate-700 border-slate-200 hover:border-slate-300 font-medium'
+                            }`}
+                          >
+                            <div className="text-xs font-black">Locker {ord.lockerId}</div>
+                            <div className="text-[9px] truncate">{ord.customerName}</div>
+                            <div className="text-[8px] opacity-80 mt-0.5">{ord.orderId}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Form Penimbangan Cucian Terpilih */}
+                  <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-2xs space-y-3">
+                    <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                      <div>
+                        <span className="text-xs font-black text-slate-900 uppercase flex items-center space-x-1.5">
+                          <Icon name="scale" className="w-4 h-4 text-amber-500" />
+                          <span>Penimbangan Cucian &bull; Locker {currentOperatorOrder.lockerId}</span>
+                        </span>
+                        <div className="text-[10px] text-slate-500">
+                          {currentOperatorOrder.orderId} &bull; {currentOperatorOrder.customerName}
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-bold text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                        SBH PresUniv
+                      </span>
+                    </div>
+
+                    {/* KETERANGAN PAKET LAYANAN PILIHAN CUSTOMER (Read-Only) */}
+                    <div className="p-3 rounded-xl bg-sky-50/70 border border-sky-200 space-y-1">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-sky-800">
+                          Paket Dipilih Oleh Customer:
+                        </span>
+                        <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-sky-600 text-white">
+                          Pilihan Customer
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-baseline pt-0.5">
+                        <span className="text-xs font-extrabold text-slate-900">
+                          {targetTierInfo.name} ({targetTierInfo.durationLabel})
+                        </span>
+                        <span className="text-xs font-black text-sky-700">
+                          Rp {targetTierInfo.ratePerKg.toLocaleString('id-ID')} / kg
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-slate-500 leading-tight">
+                        {targetTierInfo.desc}
+                      </p>
+                    </div>
+
+                    {/* KOLOM INPUT BERAT (DITETAPKAN OLEH OPERATOR) */}
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-extrabold text-slate-800 flex items-center justify-between">
+                        <span>Kolom Input Berat Cucian:</span>
+                        <span className="text-[10px] text-slate-400 font-normal">Satuan Kilogram (Netto)</span>
+                      </label>
+                      <div className="relative flex items-center">
+                        <input
+                          type="number"
+                          step="0.05"
+                          min="0.1"
+                          max="25"
+                          value={operatorInputWeight}
+                          onChange={(e) => setOperatorInputWeight(e.target.value)}
+                          placeholder="Masukkan berat, misal: 3.50"
+                          className="w-full pl-4 pr-14 py-3 bg-slate-50 border-2 border-slate-200 focus:border-amber-500 focus:bg-white rounded-2xl text-lg font-black text-slate-900 outline-none transition-all"
+                        />
+                        <div className="absolute right-4 text-xs font-black text-slate-400 uppercase pointer-events-none">
+                          KG
+                        </div>
+                      </div>
+
+                      {/* Presets Cepat */}
+                      <div className="flex space-x-1.5 pt-1">
+                        {[2.0, 3.5, 5.2, 7.0].map(val => (
+                          <button
+                            key={val}
+                            onClick={() => {
+                              setOperatorInputWeight(val.toFixed(2));
+                              sound.playSolenoidClick();
+                            }}
+                            className="flex-1 py-1 rounded-lg bg-slate-100 hover:bg-amber-100 text-slate-700 hover:text-amber-900 text-[10px] font-bold transition-all border border-slate-200"
+                          >
+                            {val} kg
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* RINCIAN PERHITUNGAN HARGA OTOMATIS */}
+                    <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs space-y-1.5">
+                      <div className="flex justify-between text-slate-600">
+                        <span>Biaya Laundry ({parsedWeight.toFixed(2)} kg x Rp {targetTierInfo.ratePerKg.toLocaleString('id-ID')}):</span>
+                        <span className="font-semibold text-slate-800">Rp {operatorPreviewSubtotal.toLocaleString('id-ID')}</span>
+                      </div>
+                      <div className="flex justify-between text-slate-600">
+                        <span>Biaya Admin Transaksi Tetap:</span>
+                        <span className="font-semibold text-slate-800">Rp {ADMIN_FEE.toLocaleString('id-ID')}</span>
+                      </div>
+                      <div className="pt-1.5 border-t border-slate-200 flex justify-between items-center">
+                        <span className="font-bold text-slate-900">Total Tagihan Final:</span>
+                        <span className="text-base font-black text-amber-600">
+                          Rp {operatorPreviewTotal.toLocaleString('id-ID')}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* TOMBOL KIRIM TAGIHAN KE CUSTOMER */}
+                    <button
+                      onClick={handleOperatorSendPricingToCustomer}
+                      className="w-full py-3 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-slate-950 font-black text-xs shadow-md shadow-amber-500/25 transition-all flex items-center justify-center space-x-2 active:scale-98"
+                    >
+                      <Icon name="send" className="w-4 h-4" />
+                      <span>Kirim Tagihan ke Customer (Locker {currentOperatorOrder.lockerId})</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* ------------------------------------------------------------- */}
+              {/* OPERATOR SUB-TAB 2: AMBIL CUCIAN KOTOR DARI BERBAGAI LOCKER   */}
+              {/* ------------------------------------------------------------- */}
+              {operatorTab === 'intake' && (
+                <div className="space-y-3">
+                  <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-2xs space-y-3">
+                    <h3 className="text-xs font-black text-slate-800 uppercase flex items-center space-x-1.5">
+                      <Icon name="box" className="w-4 h-4 text-amber-500" />
+                      <span>Daftar Cucian Kotor di Locker SBH</span>
+                    </h3>
+
+                    <div className="space-y-2.5">
+                      {Object.keys(orders).map(orderKey => {
+                        const ord = orders[orderKey];
+                        const tier = SERVICE_SPEED_TIERS[ord.speedTierKey] || SERVICE_SPEED_TIERS.fast;
+                        return (
+                          <div key={orderKey} className="p-3 rounded-2xl bg-amber-50/80 border border-amber-200 space-y-2">
+                            <div className="flex justify-between items-start">
+                              <div>
+                                <span className="text-xs font-black text-slate-900">LOCKER {ord.lockerId}</span>
+                                <span className="text-[10px] font-mono text-amber-800 block">Pesanan {ord.orderId}</span>
+                              </div>
+                              <span className="px-2 py-0.5 rounded-md bg-amber-200 text-amber-900 text-[9px] font-bold">
+                                {ord.orderStepIndex === 0 ? 'BARU DROP-OFF' : 'PERLU DIPROSES'}
+                              </span>
+                            </div>
+
+                            <div className="text-[11px] text-slate-700 space-y-0.5">
+                              <div>Pelanggan: <span className="font-bold">{ord.customerName}</span></div>
+                              <div>Paket Pilihan Customer: <span className="font-semibold text-sky-800">{tier.name} ({tier.durationLabel})</span></div>
+                              <div>Waktu Masuk: <span className="font-medium text-slate-500">{ord.dropOffTime}</span></div>
+                            </div>
+
+                            <div className="pt-1 flex space-x-2">
+                              <button
+                                onClick={() => handleOperatorPickupFromLocker(ord.lockerId)}
+                                className="flex-1 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs shadow-xs flex items-center justify-center space-x-1"
+                              >
+                                <Icon name="unlock" className="w-3.5 h-3.5" />
+                                <span>Buka Solenoid {ord.lockerId}</span>
+                              </button>
+                              <button
+                                onClick={() => {
+                                  sound.playSolenoidClick();
+                                  triggerToast('Label Barcode Tercetak', `Struk barcode ${ord.orderId} dicetak.`, 'printer');
+                                }}
+                                className="px-3 py-2 rounded-xl bg-white hover:bg-amber-100 text-slate-700 font-bold text-xs border border-amber-300 flex items-center space-x-1"
+                              >
+                                <Icon name="printer" className="w-3.5 h-3.5" />
+                                <span>Label</span>
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ------------------------------------------------------------- */}
+              {/* OPERATOR SUB-TAB 3: SETOR PAKAIAN BERSIH KE LOCKER TUJUAN     */}
+              {/* ------------------------------------------------------------- */}
+              {operatorTab === 'return' && (
+                <div className="space-y-3">
+                  <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-2xs space-y-3">
+                    <h3 className="text-xs font-black text-slate-800 uppercase flex items-center space-x-1.5">
+                      <Icon name="sparkles" className="w-4 h-4 text-sky-600" />
+                      <span>Pengembalian Pakaian Bersih (Locker SBH)</span>
+                    </h3>
+
+                    <div className="space-y-2.5">
+                      {Object.keys(orders).map(orderKey => {
+                        const ord = orders[orderKey];
+                        const tier = SERVICE_SPEED_TIERS[ord.speedTierKey] || SERVICE_SPEED_TIERS.fast;
+                        return (
+                          <div key={orderKey} className="p-3.5 rounded-2xl bg-sky-50/80 border border-sky-200 space-y-2.5 shadow-2xs">
+                            <div className="flex justify-between items-start">
+                              <div className="min-w-0 flex-1 mr-2">
+                                <div className="text-xs font-black text-slate-900 truncate">
+                                  {ord.orderId} &bull; {ord.customerName}
+                                </div>
+                                <div className="text-[10px] text-slate-600 mt-0.5">
+                                  Layanan: <span className="font-semibold text-sky-800">{tier.name}</span> &bull; Berat: <span className="font-bold">{ord.weightKg.toFixed(2)} kg</span>
+                                </div>
+                              </div>
+                              <span className="flex-none px-2 py-0.5 rounded-md bg-white border border-sky-200 text-sky-700 text-[9px] font-black whitespace-nowrap">
+                                SELESAI SETRIKA
+                              </span>
+                            </div>
+
+                            <div className="text-[11px] text-slate-600 bg-white/70 p-2 rounded-xl border border-sky-100 flex items-center justify-between">
+                              <span className="text-[10px] font-medium">Target Locker Pengembalian:</span>
+                              <span className="font-black text-sky-700 bg-sky-50 px-2 py-0.5 rounded-md border border-sky-200 text-xs">
+                                LOCKER {ord.lockerId}
+                              </span>
+                            </div>
+
+                            <button
+                              onClick={() => handleOperatorReturnCleanLocker(ord.lockerId, ord.orderId)}
+                              className="w-full py-2.5 px-2 rounded-xl bg-gradient-to-r from-sky-500 to-cyan-500 hover:from-sky-600 hover:to-cyan-600 text-white font-extrabold text-xs shadow-md shadow-sky-500/20 transition-all flex items-center justify-center space-x-1.5 active:scale-98"
+                            >
+                              <Icon name="box" className="w-3.5 h-3.5 flex-none" />
+                              <span>Setor ke Locker {ord.lockerId} &bull; Kirim QR</span>
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ------------------------------------------------------------- */}
+              {/* OPERATOR SUB-TAB 4: STATUS SELURUH LOCKER LAIN (A01-B03)      */}
+              {/* ------------------------------------------------------------- */}
+              {operatorTab === 'lockers_overview' && (
+                <div className="space-y-3">
+                  <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-2xs space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xs font-black text-slate-900 uppercase flex items-center space-x-1.5">
+                        <Icon name="layers" className="w-4 h-4 text-amber-500" />
+                        <span>Status Seluruh Locker SBH (A01 - B03)</span>
+                      </h3>
+                      <span className="text-[9px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
+                        SBH President Univ
+                      </span>
+                    </div>
+
+                    <p className="text-[10px] text-slate-500 leading-snug">
+                      Daftar status seluruh locker pintar. Klik tombol "Buka" untuk membuka solenoid pintu locker secara langsung.
+                    </p>
+
+                    {/* DAFTAR CARD STATUS LOCKER (RAPI, SIMETRIS & RESPONSIF MOBILE) */}
+                    <div className="space-y-2">
+                      {Object.keys(lockers).map((key) => {
+                        const locker = lockers[key];
+                        const cfg = LOCKER_STATUS_CONFIG[locker.status] || LOCKER_STATUS_CONFIG.AVAILABLE;
+
+                        return (
+                          <div
+                            key={key}
+                            className="p-3 rounded-2xl border border-slate-200 bg-slate-50/80 hover:bg-white flex items-center justify-between shadow-2xs transition-all"
+                          >
+                            {/* Kiri: Badge ID Locker + Detail Status */}
+                            <div className="flex items-center space-x-3 min-w-0 flex-1 mr-2">
+                              {/* Kotak Nomor Locker */}
+                              <div className="w-11 h-11 rounded-xl bg-white border border-slate-200 text-slate-900 font-black text-sm flex items-center justify-center flex-none shadow-2xs">
+                                {key}
+                              </div>
+
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center space-x-1.5 flex-wrap">
+                                  <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-md uppercase border ${cfg.bg} ${cfg.text} ${cfg.border} whitespace-nowrap inline-flex items-center`}>
+                                    <span className={`w-1.5 h-1.5 rounded-full mr-1 ${cfg.dot}`}></span>
+                                    {cfg.label}
+                                  </span>
+                                  <span className="text-[10px] text-slate-400 font-semibold whitespace-nowrap">
+                                    {locker.capacity}
+                                  </span>
+                                </div>
+
+                                <div className="text-[11px] text-slate-700 font-semibold mt-0.5 truncate">
+                                  {locker.customer ? `${locker.customer} (${locker.orderId})` : 'Locker Kosong & Siap'}
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Kanan: Tombol Buka Solenoid Cepat */}
+                            <button
+                              onClick={() => handleOperatorMasterUnlock(key)}
+                              className="flex-none px-3 py-1.5 rounded-xl bg-white hover:bg-rose-50 text-slate-700 hover:text-rose-700 border border-slate-200 hover:border-rose-300 text-xs font-bold transition-all flex items-center space-x-1 shadow-2xs active:scale-95 whitespace-nowrap"
+                            >
+                              <Icon name="key" className="w-3 h-3 text-slate-400" />
+                              <span>Buka</span>
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+            </div>
+          )}
+
+        </div>
+
+        {/* ----------------------------------------------------------------- */}
+        {/* BOTTOM NAVIGATION BAR (FIXED DOCKED AT BOTTOM - CUSTOMER ONLY)     */}
+        {/* ----------------------------------------------------------------- */}
+        {appMode === 'customer' && (
+          <nav className="fixed bottom-0 left-0 right-0 max-w-md mx-auto h-16 bg-white/95 backdrop-blur-md border-t border-slate-200 px-1 flex items-center justify-between z-40 shadow-[0_-4px_16px_rgba(0,0,0,0.06)]">
+            {[
+              { id: 'lockers', label: 'Lockers', icon: 'box' },
+              { id: 'tracker', label: 'Tracker', icon: 'clock' },
+              { id: 'qr', label: 'QR Pass', icon: 'qr-code' },
+              { id: 'wallet', label: 'Wallet', icon: 'wallet' },
+              { id: 'profile', label: 'Profile', icon: 'user' }
+            ].map(tab => {
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => {
+                    setActiveTab(tab.id);
+                    sound.playSolenoidClick();
+                  }}
+                  className={`flex-1 flex flex-col items-center justify-center py-1 px-1 rounded-xl transition-all ${
+                    isActive
+                      ? 'text-sky-600 font-extrabold'
+                      : 'text-slate-400 hover:text-slate-700'
+                  }`}
+                >
+                  <div className={`p-1 rounded-xl transition-all ${isActive ? 'bg-sky-50 text-sky-600' : ''}`}>
+                    <Icon name={tab.icon} className="w-4 h-4" />
+                  </div>
+                  <span className="text-[10px] tracking-tight whitespace-nowrap">{tab.label}</span>
+                </button>
+              );
+            })}
+          </nav>
+        )}
+
+      </main>
+
+      {/* =================================================================== */}
+      {/* MODALS                                                              */}
+      {/* =================================================================== */}
+
+      {/* 1. GANTI AKUN MODAL */}
+      {showChangeAccountModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+              <h3 className="text-sm font-black text-slate-900 flex items-center space-x-2">
+                <Icon name="users" className="w-4 h-4 text-sky-600" />
+                <span>Ganti Akun Pengguna</span>
+              </h3>
+              <button
+                onClick={() => setShowChangeAccountModal(false)}
+                className="text-slate-400 hover:text-slate-600 text-sm font-bold p-1"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              {accounts.map(acc => (
+                <div
+                  key={acc.id}
+                  onClick={() => {
+                    setAccounts(prev => prev.map(a => ({ ...a, active: a.id === acc.id })));
+                    setShowChangeAccountModal(false);
+                    sound.playSolenoidClick();
+                    triggerToast('Akun Berhasil Diganti', `Selamat datang kembali, ${acc.name}!`, 'user');
+                  }}
+                  className={`p-3 rounded-2xl border cursor-pointer transition-all flex items-center justify-between ${
+                    acc.active
+                      ? 'bg-sky-50 border-sky-400 ring-2 ring-sky-200'
+                      : 'bg-white border-slate-200 hover:border-slate-300'
+                  }`}
+                >
+                  <div className="flex items-center space-x-3">
+                    <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-sky-600 to-cyan-500 text-white font-bold text-xs flex items-center justify-center">
+                      {acc.avatar}
+                    </div>
+                    <div>
+                      <div className="text-xs font-bold text-slate-900">{acc.name}</div>
+                      <div className="text-[10px] text-slate-500">{acc.tier} &bull; {acc.points} Poin</div>
+                      <div className="text-[9px] text-slate-400">{acc.location}</div>
+                    </div>
+                  </div>
+                  {acc.active && <span className="text-sky-600 font-bold text-sm">✓</span>}
+                </div>
+              ))}
+            </div>
+
+            <button
+              onClick={() => {
+                sound.playSolenoidClick();
+                triggerToast('Tambah Akun', 'Fitur pendaftaran akun baru (UI Prototype)', 'users');
+              }}
+              className="w-full py-2 px-3 rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-bold border border-slate-200"
+            >
+              + Tambah Akun Baru
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 2. DROP-OFF MODAL (PILIH LAYANAN DROP-OFF OLEH CUSTOMER) */}
+      {showDropOffModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+              <h3 className="text-sm font-black text-slate-900 flex items-center space-x-2">
+                <Icon name="box" className="w-4 h-4 text-sky-600" />
+                <span>Drop-off Cucian ({selectedLockerId})</span>
+              </h3>
+              <button onClick={() => setShowDropOffModal(false)} className="text-slate-400 hover:text-slate-600 text-sm font-bold">✕</button>
+            </div>
+
+            <div className="space-y-2">
+              <span className="text-xs font-bold text-slate-700 block">Pilih Paket Layanan yang Anda Inginkan:</span>
+              {Object.keys(SERVICE_SPEED_TIERS).map(key => {
+                const tier = SERVICE_SPEED_TIERS[key];
+                const isSelected = customerChosenService === key;
+                return (
+                  <div
+                    key={key}
+                    onClick={() => handleCustomerSelectServiceTier(key)}
+                    className={`p-3 rounded-2xl border cursor-pointer transition-all flex justify-between items-center ${
+                      isSelected
+                        ? 'bg-sky-50 border-sky-500 ring-2 ring-sky-200'
+                        : 'bg-white border-slate-200 hover:border-slate-300'
+                    }`}
+                  >
+                    <div>
+                      <div className="text-xs font-bold text-slate-900 flex items-center space-x-1.5">
+                        <span>{tier.name} ({tier.durationLabel})</span>
+                        {isSelected && <span className="text-[10px] text-sky-600 font-bold">✓ Terpilih</span>}
+                      </div>
+                      <div className="text-[10px] text-slate-500 mt-0.5">{tier.desc}</div>
+                    </div>
+                    <span className="text-xs font-bold text-sky-700">Rp {tier.ratePerKg.toLocaleString('id-ID')}/kg</span>
+                  </div>
+                );
+              })}
+            </div>
+
+            <button
+              onClick={() => handleConfirmDropOff(selectedLockerId)}
+              className="w-full py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-extrabold text-xs shadow-md transition-all flex items-center justify-center space-x-2"
+            >
+              <Icon name="unlock" className="w-4 h-4" />
+              <span>Buka Pintu {selectedLockerId} & Masukkan Baju</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 3. HARDWARE SCANNER MODAL */}
+      {showScannerModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-5 shadow-2xl border border-sky-400 text-center space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-sky-50 border border-sky-200 text-sky-600 flex items-center justify-center mx-auto">
+              <Icon name="scan" className="w-6 h-6 animate-pulse" />
+            </div>
+
+            <div>
+              <h3 className="text-sm font-black text-slate-900">Membaca Sensor Locker SBH</h3>
+              <p className="text-[11px] text-slate-500 mt-0.5">Memvalidasi Payload Kriptografis...</p>
+            </div>
+
+            <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200 text-left font-mono text-[10px] space-y-1">
+              <div className="text-sky-700 font-bold">PAYLOAD TOKEN: {qrToken}</div>
+              <div className="text-slate-600">TARGET DOOR: LOCKER {customerOrder.lockerId}</div>
+              <div className="text-emerald-600 font-bold">VERIFIKASI: VALID & OTORISASI DITERIMA</div>
+            </div>
+
+            <div className="flex space-x-2">
+              <button
+                onClick={() => setShowScannerModal(false)}
+                className="flex-1 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs"
+              >
+                Batal
+              </button>
+              <button
+                onClick={handleConfirmScannerAction}
+                className="flex-1 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-extrabold text-xs shadow-md flex items-center justify-center space-x-1"
+              >
+                <Icon name="unlock" className="w-3.5 h-3.5" />
+                <span>Buka Solenoid {customerOrder.lockerId}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 4. TOP UP MODAL */}
+      {showTopUpModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+              <h3 className="text-sm font-black text-slate-900 flex items-center space-x-2">
+                <Icon name="wallet" className="w-4 h-4 text-sky-600" />
+                <span>Top Up Saldo LaundryGO Pay</span>
+              </h3>
+              <button onClick={() => setShowTopUpModal(false)} className="text-slate-400 hover:text-slate-600 text-sm font-bold">✕</button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              {[25000, 50000, 100000, 200000].map(amt => (
+                <button
+                  key={amt}
+                  onClick={() => handleTopUp(amt)}
+                  className="py-3 px-2 rounded-2xl bg-slate-50 hover:bg-sky-50 text-slate-800 hover:text-sky-700 text-xs font-black border border-slate-200 hover:border-sky-300 transition-all text-center"
+                >
+                  Rp {amt.toLocaleString('id-ID')}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 5. HISTORY MODAL */}
+      {showHistoryModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 space-y-4 max-h-[85vh] flex flex-col">
+            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+              <h3 className="text-sm font-black text-slate-900 flex items-center space-x-2">
+                <Icon name="clock" className="w-4 h-4 text-sky-600" />
+                <span>Riwayat Transaksi SBH</span>
+              </h3>
+              <button onClick={() => setShowHistoryModal(false)} className="text-slate-400 hover:text-slate-600 text-sm font-bold">✕</button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-2.5">
+              <div className="p-3 rounded-2xl bg-sky-50 border border-sky-200 space-y-1">
+                <div className="flex justify-between text-xs font-bold text-sky-900">
+                  <span>{customerOrder.orderId} (Aktif)</span>
+                  <span className="text-sky-700">Rp {customerOrder.totalDue.toLocaleString('id-ID')}</span>
+                </div>
+                <div className="text-[10px] text-slate-600">Locker {customerOrder.lockerId} &bull; {customerTierInfo.name} ({customerOrder.weightKg.toFixed(2)} kg)</div>
+                <div className="text-[9px] font-bold text-emerald-600">{customerOrder.isPaid ? 'LUNAS' : 'MENUNGGU PEMBAYARAN'}</div>
+              </div>
+
+              <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200 space-y-1">
+                <div className="flex justify-between text-xs font-bold text-slate-800">
+                  <span>#LDR-10210</span>
+                  <span className="text-slate-700">Rp 44.400</span>
+                </div>
+                <div className="text-[10px] text-slate-500">18 Okt 2026 &bull; Regular Clean (6.2 kg)</div>
+                <div className="text-[9px] font-bold text-slate-500">SELESAI & DIAMBIL</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+}
+
+// Mount React Root
+const rootElement = document.getElementById('root');
+if (rootElement) {
+  const root = ReactDOM.createRoot(rootElement);
+  root.render(<App />);
+}
+
+  </script>
+</body>
+</html>
