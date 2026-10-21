@@ -34,14 +34,14 @@ Platform mobile web modern untuk ekosistem **Smart Laundry Locker** di **SBH Pre
 * **Dynamic Optical QR Pass**: Kode QR dinamis dengan sistem rotasi token 30 detik (TOTP), watermark keamanan anti-screenshot, dan timestamp real-time untuk pemindaian solenoid pintu locker.
 * **Pelacakan Cucian Real-Time (Tracker)**: Memantau 5 tahapan pengerjaan laundry serta rincian biaya transparan setelah cucian ditimbang operator.
 * **LaundryGO Pay (Digital Wallet)**: Top up saldo instan dan pembayaran cashless sekali klik.
-* **Profil Pengguna & Switch Account**: Kartu profil pengguna umum (**Vicky Pratama**, Gold Member) dilengkapi modal antarmuka ganti akun interaktif dan akses pintas ke Mode Operator.
+* **Profil Pengguna & Switch Account**: Kartu profil pengguna umum (**MoneyLaundry team**, Gold Member) dilengkapi modal antarmuka ganti akun interaktif dan akses pintas ke Mode Operator.
 * **Fixed Bottom Navigation**: Menu navigasi 5-tab terkunci permanen di bagian bawah layar (*docked at bottom*), tidak terpotong saat scroll.
 
 ### 2. POV Operator (Stasiun Mitra Laundry)
 * **Kepatuhan Paket Pilihan Customer (Read-Only)**: Operator tidak menetapkan paket secara sepihak, melainkan memproses pesanan sesuai paket yang telah dipilih customer.
 * **Kolom Input Berat Cucian**: Operator hanya fokus menimbang dan memasukkan berat (kg) cucian netto.
 * **Kalkulasi & Kirim Tagihan Otomatis**: Menghitung `(Berat kg × Tarif Paket) + Biaya Admin Rp 1.000` dan langsung menerbitkan tagihan ke tab Tracker customer.
-* **Dukungan Multi-Locker Order**: Mendukung pemrosesan beberapa locker aktif sekaligus (A01 Vicky Pratama, A03 Amanda Sari, B02 Budi Santoso).
+* **Dukungan Multi-Locker Order**: Mendukung pemrosesan beberapa locker aktif sekaligus (A01 MoneyLaundry team, A03 Amanda Sari, B02 Budi Santoso).
 * **Sub-Tab Ambil Kotor**: Daftar cucian kotor yang perlu diambil dari locker beserta tombol buka solenoid dan cetak label barcode.
 * **Sub-Tab Setor Bersih**: Pengembalian pakaian bersih ke locker tujuan dan penerbitan QR pass otomatis ke customer.
 * **Sub-Tab Status Locker**: Monitoring seluruh unit locker SBH (A01–B03) dalam format *horizontal row card* yang responsif dan rapi tanpa dead space vertikal.

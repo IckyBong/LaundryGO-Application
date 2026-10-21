@@ -785,11 +785,11 @@ function App() {
   const [accounts, setAccounts] = useState([
     {
       id: 'acc-1',
-      name: 'Vicky Pratama',
-      email: 'vicky.pratama@president.ac.id',
+      name: 'MoneyLaundry team',
+      email: 'moneylaundry.team@president.ac.id',
       phone: '+62 812-9876-5432',
       tier: 'Gold Member',
-      avatar: 'VP',
+      avatar: 'ML',
       location: 'SBH President University',
       primaryKiosk: 'Locker SBH',
       points: 1450,
@@ -831,7 +831,7 @@ function App() {
   // Menampilkan status seluruh locker untuk diproses oleh operator
   // =======================================================================
   const [lockers, setLockers] = useState({
-    A01: { id: 'A01', status: 'READY FOR PICKUP', capacity: '7 kg', lastUpdated: '10 mnt lalu', orderId: '#LDR-10245', customer: 'Vicky Pratama' },
+    A01: { id: 'A01', status: 'READY FOR PICKUP', capacity: '7 kg', lastUpdated: '10 mnt lalu', orderId: '#LDR-10245', customer: 'MoneyLaundry team' },
     A02: { id: 'A02', status: 'AVAILABLE', capacity: '7 kg', lastUpdated: 'Baru saja', orderId: null, customer: null },
     A03: { id: 'A03', status: 'OCCUPIED', capacity: '12 kg', lastUpdated: '25 mnt lalu', orderId: '#LDR-10244', customer: 'Amanda Sari' },
     B01: { id: 'B01', status: 'AVAILABLE', capacity: '7 kg', lastUpdated: '5 mnt lalu', orderId: null, customer: null },
@@ -848,9 +848,9 @@ function App() {
     '#LDR-10245': {
       orderId: '#LDR-10245',
       lockerId: 'A01',
-      customerName: 'Vicky Pratama',
-      customerAvatar: 'VP',
-      speedTierKey: 'fast', // DIPILIH OLEH VICKY PRATAMA (Fast Service - 2 Hari)
+      customerName: 'MoneyLaundry team',
+      customerAvatar: 'ML',
+      speedTierKey: 'fast', // DIPILIH OLEH MONEYLAUNDRY TEAM (Fast Service - 2 Hari)
       weightKg: 3.50,
       serviceRate: 10000,
       adminFee: ADMIN_FEE,
@@ -910,7 +910,7 @@ function App() {
     sound.playSolenoidClick();
   };
 
-  // Customer Active Order (Vicky Pratama)
+  // Customer Active Order (MoneyLaundry team)
   const customerOrder = orders['#LDR-10245'];
   const customerTierInfo = SERVICE_SPEED_TIERS[customerOrder.speedTierKey] || SERVICE_SPEED_TIERS.fast;
 
@@ -1489,7 +1489,7 @@ function App() {
 
                 <div className="space-y-3 relative before:absolute before:left-3.5 before:top-2 before:bottom-2 before:w-0.5 before:bg-slate-200">
                   {[
-                    { label: `Drop-off di Locker ${customerOrder.lockerId} oleh Vicky Pratama`, time: '10:02 WIB' },
+                    { label: `Drop-off di Locker ${customerOrder.lockerId} oleh ${customerOrder.customerName}`, time: '10:02 WIB' },
                     { label: 'Diambil Petugas Laundry (OP-042)', time: '10:24 WIB' },
                     { label: `Ditimbang & Dicuci (${customerTierInfo.name} - ${customerOrder.weightKg.toFixed(2)} kg)`, time: '11:15 WIB' },
                     { label: `Pakaian Bersih Siap di Locker ${customerOrder.lockerId}`, time: '13:45 WIB' },
